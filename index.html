@@ -579,29 +579,25 @@
   </div>
 
   <script>
-    const SUPABASE_URL = 'https://pgvwjskubfonmirtaodo.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBndndqc2t1YmZvbm1pcnRhb2RvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4MjY2OTUsImV4cCI6MjA3NTQwMjY5NX0.dTHvwiH_UZC7K8pxLYIt5VOstu-4Shy0DW3n3C8TJsg';
+    // One Supabase project for everything. All data access goes through RPC functions only.
+    const SUPABASE_URL = ' https://hkpjhckamtfecspbacla.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrcGpoY2thbXRmZWNzcGJhY2xhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0NTAxNzksImV4cCI6MjEwNTAyNjE3OX0.e4B5bnL4uC3oC2ym7EZvKnh_eJApj6nTJGso7GQLVvM'
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    const EXAM_SUPABASE_URL = 'https://owzmqbzibisycviphuux.supabase.co';
-    const EXAM_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im93em1xYnppYmlzeWN2aXBodXV4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMDk5MjIsImV4cCI6MjA4NjY4NTkyMn0.aNqwz60R53XslePMeuJ3HfpAXowWg4JEYrsWkcAcDSA';
-    const examSupabase = supabase.createClient(EXAM_SUPABASE_URL, EXAM_SUPABASE_KEY);
-
-    let allQuestions = [];
+    let allQuestions = [];   // [{ id, question_en, question_hi, options: [{ id, text_en, text_hi }] }]
     let currentIndex = 0;
-    let userAnswers = [];
+    let userAnswers = [];    // chosen option_id for each question index
     let currentUser = null;
     let currentExamId = "";
     let examSubmitted = false;
+    let timerInterval = null;
 
-    // ── NEW HELPER ──────────────────────────────────────────────────────────────
     // Replaces the literal characters /n (forward-slash + n) with an HTML <br>
     // so multi-line questions and options render correctly.
     function formatText(text) {
       if (!text) return "";
       return text.split("/n").join("<br>");
     }
-    // ────────────────────────────────────────────────────────────────────────────
 
     function toTitleCase(str) {
       if (!str) return "";
@@ -632,6 +628,12 @@
     window.closeFeeModal = function () {
       document.getElementById("fee-modal").style.display = "none";
     };
+
+    function resetStartButton(btn, text) {
+      btn.disabled = false;
+      btn.textContent = text;
+      btn.style.background = "#007bff";
+    }
 
     async function verifyStudentFeeStatus(rollNumber, branch = "all") {
       try {
@@ -672,6 +674,7 @@
       }
     }
 
+    // ── Branch selected → ask the server which exam to show ─────────────────────
     document.getElementById("branch-select").addEventListener("change", async (e) => {
       const branch = e.target.value;
       const examInput = document.getElementById("exam-id-input");
@@ -684,57 +687,27 @@
       }
 
       try {
-        // NOTE: created_at ordering removed — exam selection is now based purely
-        // on operational_time, not on which row was most recently created.
-        const { data: exams, error } = await examSupabase
-          .from('exam_info')
-          .select('exam_id, operational_time')
-          .eq('branch', branch);
-
+        const { data: examId, error } = await supabaseClient.rpc("get_current_exam", { p_branch: branch });
         if (error) throw error;
 
-        if (exams && exams.length > 0) {
-          const now = new Date();
-
-          // Exams that are already open (operational_time <= now)
-          const opened = exams
-            .filter(ex => ex.operational_time && new Date(ex.operational_time).getTime() <= now.getTime())
-            .sort((a, b) => new Date(b.operational_time) - new Date(a.operational_time)); // most recently opened first
-
-          // Exams not yet open (operational_time > now)
-          const upcoming = exams
-            .filter(ex => ex.operational_time && new Date(ex.operational_time).getTime() > now.getTime())
-            .sort((a, b) => new Date(a.operational_time) - new Date(b.operational_time)); // soonest first
-
-          let chosen;
-          if (opened.length > 0) {
-            chosen = opened[0]; // the currently active exam
-          } else if (upcoming.length > 0) {
-            chosen = upcoming[0]; // next exam to open
-          } else {
-            chosen = exams[0]; // no operational_time set anywhere, fallback
-          }
-
-          examInput.value = chosen.exam_id;
+        if (examId) {
+          examInput.value = examId;
           examInput.placeholder = "Exam ID";
         } else {
           examInput.placeholder = "No exam found for this branch";
         }
       } catch (err) {
-        console.error("Error fetching exams:", err);
+        console.error("Error fetching exam:", err);
         examInput.placeholder = "Error loading exam";
       }
     });
 
+    // ── Start exam ───────────────────────────────────────────────────────────────
     document.getElementById("start-exam").addEventListener("click", async () => {
       const startBtn = document.getElementById("start-exam");
-      const branchSelect = document.getElementById("branch-select");
-      const rollInput = document.getElementById("roll-input");
-      const examIdInput = document.getElementById("exam-id-input");
-
-      const branch = branchSelect.value;
-      const roll = rollInput.value.trim();
-      const examId = examIdInput.value.trim();
+      const branch = document.getElementById("branch-select").value;
+      const roll = document.getElementById("roll-input").value.trim();
+      const examId = document.getElementById("exam-id-input").value.trim();
 
       if (!branch || !roll || !examId) {
         alert("Please select branch and enter roll number (Exam ID must be loaded)");
@@ -742,47 +715,34 @@
       }
 
       const formattedId = `${branch.charAt(0).toLowerCase()}_${roll}`;
-      console.log(formattedId);
       const originalText = startBtn.textContent;
       startBtn.disabled = true;
       startBtn.textContent = "Verifying...";
       startBtn.style.background = "grey";
 
       try {
-        // Step 1: Check if Exam is Restricted AND whether it is open yet (operational_time)
-        const { data: examData, error: examErr } = await examSupabase
-          .from('exam_info')
-          .select('restricted, operational_time')
-          .eq('exam_id', examId)
-          .single();
+        // Step 1: Is the exam open yet, and is it restricted?
+        const { data: gate, error: gateErr } = await supabaseClient.rpc("get_exam_gate", { p_exam_id: examId });
+        if (gateErr) throw gateErr;
 
-        if (examErr) {
-          console.error("Error fetching exam restriction:", examErr);
+        if (!gate || !gate.found) {
+          alert("This exam could not be found. Please select your branch again.");
+          resetStartButton(startBtn, originalText);
+          return;
         }
 
-        // Step 1a: Block immediately if operational_time is set and is in the future.
-        // No fee check, no profile check, no exception — exam simply cannot start yet.
-        if (examData && examData.operational_time) {
-          const opTime = new Date(examData.operational_time);
-          const now = new Date();
-
-          if (!isNaN(opTime.getTime()) && opTime.getTime() > now.getTime()) {
-            const opTimeStr = opTime.toLocaleString();
-            showFeeStatusModal(
-              `This exam is not open yet. It will become available on ${opTimeStr}. Please come back then.`,
-              `यह परीक्षा अभी शुरू नहीं हुई है। यह ${opTimeStr} पर उपलब्ध होगी। कृपया उस समय पुनः प्रयास करें।`
-            );
-            startBtn.disabled = false;
-            startBtn.textContent = originalText;
-            startBtn.style.background = "#007bff";
-            return;
-          }
+        if (!gate.is_open) {
+          const opTimeStr = new Date(gate.operational_time).toLocaleString();
+          showFeeStatusModal(
+            `This exam is not open yet. It will become available on ${opTimeStr}. Please come back then.`,
+            `यह परीक्षा अभी शुरू नहीं हुई है। यह ${opTimeStr} पर उपलब्ध होगी। कृपया उस समय पुनः प्रयास करें।`
+          );
+          resetStartButton(startBtn, originalText);
+          return;
         }
 
-        const isRestricted = examData ? examData.restricted : false;
-
-        if (isRestricted) {
-          // Step 1b: Verify Fees ONLY if Restricted
+        // Step 2: Fee check, only for restricted exams
+        if (gate.restricted) {
           const feeResult = await verifyStudentFeeStatus(formattedId, branch);
 
           if (!feeResult.exists) {
@@ -790,9 +750,7 @@
               "Roll number not found in fee records. Please check your details.",
               "फीस रिकॉर्ड में रोल नंबर नहीं मिला। कृपया अपने विवरण की जाँच करें।"
             );
-            startBtn.disabled = false;
-            startBtn.textContent = originalText;
-            startBtn.style.background = "#007bff";
+            resetStartButton(startBtn, originalText);
             return;
           }
 
@@ -801,35 +759,57 @@
               `Academic Dues Pending! Your current status is: ${feeResult.currentStatus}. Please clear your dues to proceed.`,
               `अकादमिक बकाया लंबित है! आपकी वर्तमान स्थिति है: ${feeResult.currentStatus}। आगे बढ़ने के लिए कृपया अपना बकाया जमा करें।`
             );
-            startBtn.disabled = false;
-            startBtn.textContent = originalText;
-            startBtn.style.background = "#007bff";
+            resetStartButton(startBtn, originalText);
             return;
           }
         }
 
-        // Step 2: Verify Student Profile
-        const { data: student, error } = await supabaseClient
-          .from('students')
-          .select('*')
-          .eq('roll_number', formattedId)
-          .single();
+        // Step 3: Student profile + exam settings + questions, all in one call
+        const { data: started, error: startErr } = await supabaseClient.rpc("start_exam", {
+          p_roll_number: formattedId,
+          p_exam_id: examId,
+        });
+        if (startErr) throw startErr;
 
-        if (error || !student) {
-          alert("Student profile not found. Please contact administration.");
-          startBtn.disabled = false;
-          startBtn.textContent = originalText;
-          startBtn.style.background = "#007bff";
-          return;
+        switch (started?.status) {
+          case "ok":
+            break;
+          case "student_not_found":
+            alert("Student profile not found. Please contact administration.");
+            resetStartButton(startBtn, originalText);
+            return;
+          case "already_submitted":
+            showFeeStatusModal(
+              "You have already submitted this exam.",
+              "आप यह परीक्षा पहले ही जमा कर चुके हैं।"
+            );
+            resetStartButton(startBtn, originalText);
+            return;
+          case "not_open":
+            showFeeStatusModal(
+              "This exam is not open yet. Please come back later.",
+              "यह परीक्षा अभी शुरू नहीं हुई है। कृपया बाद में पुनः प्रयास करें।"
+            );
+            resetStartButton(startBtn, originalText);
+            return;
+          case "no_questions":
+            alert("No questions have been added to this exam yet. Please contact administration.");
+            resetStartButton(startBtn, originalText);
+            return;
+          default:
+            alert("This exam could not be started. Please contact administration.");
+            resetStartButton(startBtn, originalText);
+            return;
         }
 
-        // Student found
+        const student = started.student;
         currentUser = student;
-        currentExamId = examId;
+        currentExamId = started.exam.exam_id;
+        examSubmitted = false;
+        userAnswers = [];
 
         // Update Right Panel
-        const candidateInfo = document.getElementById("candidate-info");
-        candidateInfo.innerHTML = `
+        document.getElementById("candidate-info").innerHTML = `
       <h3>Candidate Info</h3>
       <p><b>Roll Number:</b> ${student.roll_number}</p>
       <p><b>Student Name:</b> ${toTitleCase(student.student_name)}</p>
@@ -847,108 +827,43 @@
 
         document.getElementById("start").style.display = "none";
         document.getElementById("exam").style.display = "grid";
+        document.querySelector(".questions").innerHTML =
+          '<div class="question-card"><h2>Loading questions...</h2></div>';
 
-        // Fetch Exam Duration
-        const { data: examInfo, error: examError } = await examSupabase
-          .from('exam_info')
-          .select('duration_mins')
-          .eq('exam_id', examId)
-          .single();
+        const duration = started.exam.duration_mins || 30;
 
-        const duration = (examInfo && examInfo.duration_mins) ? examInfo.duration_mins : 30;
-
-        startTimer(duration);
-        await loadAllQuestions();
+        await prepareQuestions(started.questions);
         renderQuestion(0);
+        startTimer(duration);
 
       } catch (err) {
         console.error("Verification error:", err);
         alert("Something went wrong. Please try again.");
-        startBtn.disabled = false;
-        startBtn.textContent = originalText;
-        startBtn.style.background = "#007bff";
+        resetStartButton(startBtn, originalText);
       }
     });
 
-    async function loadAllQuestions() {
-      try {
-        // Fetch question IDs associated with the current exam
-        const { data: examQs, error: eqError } = await examSupabase
-          .from('exam_questions')
-          .select('question_id')
-          .eq('exam_id', currentExamId);
+    // Adds Hindi translations to the questions the server returned
+    async function prepareQuestions(rawQuestions) {
+      allQuestions = await Promise.all(rawQuestions.map(async (q) => {
+        // strip /n before sending to translator for cleaner output
+        const questionHi = await translateText(q.question_text.split("/n").join(" "));
 
-        if (eqError) throw eqError;
-        if (!examQs || examQs.length === 0) {
-          console.error("No questions found for this exam ID.");
-          return;
-        }
+        const options = await Promise.all(q.options.map(async (opt) => ({
+          id: opt.option_id,
+          text_en: opt.option_text,      // keep original /n for display
+          text_hi: await translateText(opt.option_text.split("/n").join(" "))
+        })));
 
-        const qIds = examQs.map(q => q.question_id);
+        return {
+          id: q.question_id,
+          question_en: q.question_text,
+          question_hi: questionHi,
+          options
+        };
+      }));
 
-        // Fetch the actual questions using the IDs obtained
-        const { data: questions, error: qError } = await examSupabase
-          .from('questions')
-          .select('*')
-          .in('question_id', qIds);
-
-        if (qError) throw qError;
-
-        // Fetch total questions count for this exam
-        const { data: examInfo } = await examSupabase
-          .from('exam_info')
-          .select('total_questions')
-          .eq('exam_id', currentExamId)
-          .single();
-
-        const questionCount = examInfo?.total_questions || 20;
-
-        // Shuffle and take based on total_questions
-        const selectedQuestions = questions.sort(() => Math.random() - 0.5).slice(0, questionCount);
-
-        // Fetch options for these questions
-        const questionIds = selectedQuestions.map(q => q.question_id);
-        const { data: options, error: oError } = await examSupabase
-          .from('question_options')
-          .select('*')
-          .in('question_id', questionIds);
-
-        if (oError) throw oError;
-
-        // Group options by question_id and translate
-        const processedQuestions = await Promise.all(selectedQuestions.map(async (q) => {
-          const qOptions = options.filter(opt => opt.question_id === q.question_id);
-
-          // Translate question text (strip /n before sending to translator for cleaner output)
-          const cleanQuestionText = q.question_text.split("/n").join(" ");
-          const questionHi = await translateText(cleanQuestionText);
-
-          // Translate options (strip /n before sending to translator)
-          const translatedOptions = await Promise.all(qOptions.map(async (opt) => {
-            const cleanOptText = opt.option_text.split("/n").join(" ");
-            return {
-              text_en: opt.option_text,       // keep original /n for display
-              text_hi: await translateText(cleanOptText),
-              is_correct: opt.is_correct
-            };
-          }));
-
-          return {
-            id: q.question_id,
-            question_en: q.question_text,     // kept raw; formatText() handles /n at render time
-            question_hi: questionHi,
-            options_en: translatedOptions.map(o => o.text_en),
-            options_hi: translatedOptions.map(o => o.text_hi),
-            answer_en: translatedOptions.find(o => o.is_correct)?.text_en || "",
-            answer_hi: translatedOptions.find(o => o.is_correct)?.text_hi || ""
-          };
-        }));
-
-        allQuestions = processedQuestions;
-        renderSidebar();
-      } catch (err) {
-        console.error("Error loading questions from Supabase:", err);
-      }
+      renderSidebar();
     }
 
     function renderSidebar() {
@@ -974,10 +889,10 @@
     <div class="question-card">
       <h2>Q${index + 1}. ${formatText(q.question_en)}</h2>
       <h3 style="color:#555; font-weight:normal; margin-top:10px;">${formatText(q.question_hi) || ""}</h3>
-      ${q.options_en.map((opt, i) => `
+      ${q.options.map(opt => `
         <label class="option">
-          <input type="radio" name="q${index}" value="${opt}">
-          ${formatText((q.options_hi && q.options_hi[i]) || opt)} (${formatText(opt)})
+          <input type="radio" name="q${index}" value="${opt.id}">
+          ${formatText(opt.text_hi || opt.text_en)} (${formatText(opt.text_en)})
         </label>`).join('')}
     </div>
     <div class="nav-buttons">
@@ -1023,75 +938,81 @@
       let time = durationInMinutes * 60;
       const timerDisplay = document.getElementById("timer");
 
-      const interval = setInterval(() => {
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
         const mins = Math.floor(time / 60);
         const secs = time % 60;
         timerDisplay.textContent = `⏳ ${mins}:${secs < 10 ? "0" : ""}${secs}`;
 
         if (time <= 0) {
-          clearInterval(interval);
+          clearInterval(timerInterval);
           submitExam();
         }
         time--;
       }, 1000);
     }
 
-    function calculateScore() {
-      let score = 0;
-      allQuestions.forEach((q, i) => {
-        if (userAnswers[i] && userAnswers[i].trim().toLowerCase() === q.answer_en.trim().toLowerCase()) {
-          score++;
-        }
-      });
-      return score;
-    }
-
+    // ── Submit: the server grades the answers and saves the result ──────────────
     async function submitExam() {
       if (examSubmitted) return;
       examSubmitted = true;
 
-      const score = calculateScore();
-
-      // Update submit buttons
       document.querySelectorAll(".submit-btn, .submit-btn-final").forEach(btn => {
         btn.disabled = true;
         btn.textContent = "Submitting...";
         btn.style.background = "grey";
       });
 
-      // Calculate score and render dashboard immediately for UI
-      renderResultsDashboard(score);
+      const answers = allQuestions.map((q, i) => ({
+        question_id: q.id,
+        option_id: userAnswers[i] || null
+      }));
 
       try {
-        // Record exam result in Supabase
-        const { error } = await supabaseClient.from('exam_result').insert([
-          {
-            roll_number: currentUser.roll_number,
-            exam_id: currentExamId,
-            student_name: currentUser.student_name,
-            father_name: currentUser.father_name,
-            score: score
-          }
-        ]);
+        const { data: result, error } = await supabaseClient.rpc("submit_exam", {
+          p_roll_number: currentUser.roll_number,
+          p_exam_id: currentExamId,
+          p_answers: answers
+        });
+        if (error) throw error;
 
-        if (error) {
-          console.error("Supabase insert error:", error);
-          alert("Error saving result: " + error.message);
-        } else {
-          console.log("Result saved successfully");
+        if (result.status === "already_submitted") {
+          clearInterval(timerInterval);
+          alert("This exam has already been submitted for your roll number.");
+          location.reload();
+          return;
         }
+        if (result.status !== "ok") {
+          throw new Error("Submit failed: " + result.status);
+        }
+
+        clearInterval(timerInterval);
+        renderResultsDashboard(result);
+        document.getElementById("exam").style.display = "none";
+        document.getElementById("success").style.display = "flex";
       } catch (err) {
         console.error("Submission error:", err);
-        alert("Something went wrong while submitting the exam.");
-      }
+        alert("Couldn't submit your exam. Please check your connection and try again.");
 
-      document.getElementById("exam").style.display = "none";
-      document.getElementById("success").style.display = "flex";
+        // let the student retry
+        examSubmitted = false;
+        document.querySelectorAll(".submit-btn, .submit-btn-final").forEach(btn => {
+          btn.disabled = false;
+          btn.textContent = "Submit Exam";
+          btn.style.background = "";
+        });
+      }
     }
 
-    function renderResultsDashboard(score) {
+    function renderResultsDashboard(result) {
       const container = document.getElementById("success");
-      const percentage = (score / allQuestions.length) * 100;
+      const score = result.score;
+      const total = result.out_of || allQuestions.length;
+      const percentage = total > 0 ? (score / total) * 100 : 0;
+
+      // question_id -> correct option_id (sent by the server only after submission)
+      const correctMap = {};
+      (result.review || []).forEach(r => { correctMap[r.question_id] = r.correct_option_id; });
 
       let remark = "";
       let remarkColor = "";
@@ -1101,18 +1022,15 @@
       else { remark = "Need Hardwork! 💪"; remarkColor = "#ef4444"; }
 
       let reviewCards = allQuestions.map((q, i) => {
-        const isCorrect = userAnswers[i]?.trim().toLowerCase() === q.answer_en.trim().toLowerCase();
-        const userAns = userAnswers[i] || "Not Answered";
-        const correctAns = q.answer_en;
+        const correctId = correctMap[q.id];
+        const userOpt = q.options.find(o => o.id === userAnswers[i]);
+        const correctOpt = q.options.find(o => o.id === correctId);
+        const isCorrect = !!userOpt && userOpt.id === correctId;
 
-        let userAnsHi = "";
-        if (userAnswers[i]) {
-          const idx = q.options_en.indexOf(userAns);
-          userAnsHi = idx !== -1 ? q.options_hi[idx] : "";
-        }
-
-        const correctIdx = q.options_en.indexOf(correctAns);
-        const correctAnsHi = correctIdx !== -1 ? q.options_hi[correctIdx] : "";
+        const userAns = userOpt ? userOpt.text_en : "Not Answered";
+        const userAnsHi = userOpt ? userOpt.text_hi : "";
+        const correctAns = correctOpt ? correctOpt.text_en : "";
+        const correctAnsHi = correctOpt ? correctOpt.text_hi : "";
 
         return `
       <div class="review-card ${isCorrect ? 'correct' : 'incorrect'}">
@@ -1145,7 +1063,7 @@
         <div class="score-details">
           <div class="remark-text" style="color: ${remarkColor}">${remark}</div>
           <div class="score-stats">
-            You got <strong>${score}</strong> out of <strong>${allQuestions.length}</strong> questions correct.
+            You got <strong>${score}</strong> out of <strong>${total}</strong> questions correct.
           </div>
           <button class="exit-btn" onclick="location.reload()">Back to Home</button>
         </div>
@@ -1186,7 +1104,7 @@
       }, interval);
     }
 
-    // Global submit button handler
+    // Global submit button handler (right panel)
     document.querySelector(".submit-btn").addEventListener("click", submitExam);
   </script>
 </body>
