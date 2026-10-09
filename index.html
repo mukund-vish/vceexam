@@ -416,7 +416,6 @@
     }
   }
 
-  /* Custom Fee Modal Styles */
   .modal-overlay {
     position: fixed;
     top: 0;
@@ -515,6 +514,52 @@
   .modal-btn:active {
     transform: translateY(0);
   }
+
+  .nav-btn:disabled,
+  .submit-btn:disabled {
+    background: #9ca3af !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+    transform: none !important;
+  }
+
+  .submit-btn-final {
+    background: #dc3545;
+    color: #fff;
+  }
+
+  .submit-btn-final:hover {
+    background: #b02a37;
+  }
+
+  #submit-hint {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #b45309;
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .modal-btn.secondary {
+    background: #e2e8f0;
+    color: #1e293b;
+    box-shadow: none;
+  }
+
+  .modal-btn.secondary:hover {
+    background: #cbd5e1;
+  }
+
+  .modal-actions .modal-btn {
+    padding: 14px 24px;
+  }
 </style>
 
 <body>
@@ -542,9 +587,7 @@
     </div>
 
     <div class="questions">
-      <div class="question-card">
-        <!-- Question content goes here -->
-      </div>
+      <div class="question-card"></div>
       <div class="nav-buttons">
         <button class="nav-btn prev-btn">⬅ Previous</button>
         <button class="nav-btn next-btn">Next ➡</button>
@@ -559,14 +602,12 @@
         <p><b>Status:</b> Active</p>
       </div>
       <button class="submit-btn">Submit Exam</button>
+      <p id="submit-hint"></p>
     </div>
   </div>
 
-  <div id="success" class="success-page">
-    <!-- Full page results will be injected here -->
-  </div>
+  <div id="success" class="success-page"></div>
 
-  <!-- Custom Fee Modal -->
   <div id="fee-modal" class="modal-overlay">
     <div class="modal-card">
       <h2>⚠️ Attention / ध्यान दें</h2>
@@ -578,22 +619,37 @@
     </div>
   </div>
 
+  <div id="confirm-modal" class="modal-overlay">
+    <div class="modal-card">
+      <h2>❓ Please Confirm / कृपया पुष्टि करें</h2>
+      <div class="modal-message">
+        <p id="confirm-msg-en" class="msg-en"></p>
+        <p id="confirm-msg-hi" class="msg-hi"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn secondary" id="confirm-no">No, Go Back / नहीं, वापस जाएँ</button>
+        <button class="modal-btn" id="confirm-yes">Yes / हाँ</button>
+      </div>
+    </div>
+  </div>
+
   <script>
-    // One Supabase project for everything. All data access goes through RPC functions only.
-    const SUPABASE_URL = ' https://hkpjhckamtfecspbacla.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrcGpoY2thbXRmZWNzcGJhY2xhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0NTAxNzksImV4cCI6MjEwNTAyNjE3OX0.e4B5bnL4uC3oC2ym7EZvKnh_eJApj6nTJGso7GQLVvM'
+    const SUPABASE_URL = 'https://hkpjhckamtfecspbacla.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrcGpoY2thbXRmZWNzcGJhY2xhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0NTAxNzksImV4cCI6MjEwNTAyNjE3OX0.e4B5bnL4uC3oC2ym7EZvKnh_eJApj6nTJGso7GQLVvM';
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    let allQuestions = [];   // [{ id, question_en, question_hi, options: [{ id, text_en, text_hi }] }]
+    let allQuestions = [];
     let currentIndex = 0;
-    let userAnswers = [];    // chosen option_id for each question index
+    let userAnswers = [];
     let currentUser = null;
     let currentExamId = "";
     let examSubmitted = false;
     let timerInterval = null;
+    let examTotalSecs = 0;
+    let remainingSecs = 0;
+    let confirmCallback = null;
+    let resultsShown = false;
 
-    // Replaces the literal characters /n (forward-slash + n) with an HTML <br>
-    // so multi-line questions and options render correctly.
     function formatText(text) {
       if (!text) return "";
       return text.split("/n").join("<br>");
@@ -628,6 +684,110 @@
     window.closeFeeModal = function () {
       document.getElementById("fee-modal").style.display = "none";
     };
+
+    function showConfirmModal(en, hi, onYes) {
+      document.getElementById("confirm-msg-en").textContent = en;
+      document.getElementById("confirm-msg-hi").textContent = hi;
+      confirmCallback = onYes;
+      document.getElementById("confirm-modal").style.display = "flex";
+    }
+
+    function hideConfirmModal() {
+      document.getElementById("confirm-modal").style.display = "none";
+      confirmCallback = null;
+    }
+
+    document.getElementById("confirm-no").addEventListener("click", hideConfirmModal);
+    document.getElementById("confirm-yes").addEventListener("click", () => {
+      const cb = confirmCallback;
+      hideConfirmModal();
+      if (cb) cb();
+    });
+
+    function isSubmitUnlocked() {
+      return examTotalSecs > 0 && (examTotalSecs - remainingSecs) >= examTotalSecs / 4;
+    }
+
+    function updateSubmitButtons() {
+      if (examSubmitted) return;
+      const unlocked = isSubmitUnlocked();
+
+      document.querySelectorAll(".submit-btn, .submit-btn-final").forEach(btn => {
+        btn.disabled = !unlocked;
+      });
+
+      const hint = document.getElementById("submit-hint");
+      if (hint) {
+        if (unlocked) {
+          hint.textContent = "";
+        } else {
+          const secsLeft = Math.ceil(examTotalSecs / 2) - (examTotalSecs - remainingSecs);
+          const m = Math.floor(secsLeft / 60);
+          const s = secsLeft % 60;
+          const t = `${m}:${s < 10 ? "0" : ""}${s}`;
+          hint.innerHTML = `Submit unlocks in ${t}<br>सबमिट ${t} बाद उपलब्ध होगा`;
+        }
+      }
+    }
+
+    function requestSubmit() {
+      if (examSubmitted) return;
+
+      if (!isSubmitUnlocked()) {
+        showFeeStatusModal(
+          "You can submit the exam only after half of the exam time has passed.",
+          "आप परीक्षा तभी जमा कर सकते हैं जब परीक्षा का आधा समय बीत जाए।"
+        );
+        return;
+      }
+
+      const unanswered = allQuestions.length - userAnswers.filter(Boolean).length;
+      const extraEn = unanswered > 0 ? ` You have ${unanswered} unanswered question(s).` : "";
+      const extraHi = unanswered > 0 ? ` आपके ${unanswered} प्रश्न बिना उत्तर के हैं।` : "";
+
+      showConfirmModal(
+        `Are you completely sure you want to submit your answers?${extraEn} You cannot change them after submitting.`,
+        `क्या आप पूरी तरह निश्चित हैं कि आप अपने उत्तर जमा करना चाहते हैं?${extraHi} जमा करने के बाद आप उन्हें बदल नहीं सकेंगे।`,
+        () => submitExam()
+      );
+    }
+
+    function confirmLeaveResults() {
+      showConfirmModal(
+        "Have you properly reviewed your answers and score? If you continue, this results page will be closed and you cannot view it again.",
+        "क्या आपने अपने उत्तरों और स्कोर को ठीक से देख लिया है? आगे बढ़ने पर यह परिणाम पेज बंद हो जाएगा और आप इसे दोबारा नहीं देख पाएँगे।",
+        () => {
+          resultsShown = false;
+          location.reload();
+        }
+      );
+    }
+
+    function enableResultsGuards() {
+      resultsShown = true;
+
+      history.pushState({ results: true }, "", location.href);
+      window.addEventListener("popstate", () => {
+        if (!resultsShown) return;
+        history.pushState({ results: true }, "", location.href);
+        confirmLeaveResults();
+      });
+
+      window.addEventListener("keydown", (e) => {
+        if (!resultsShown) return;
+        const isRefresh = e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
+        if (isRefresh) {
+          e.preventDefault();
+          confirmLeaveResults();
+        }
+      });
+
+      window.addEventListener("beforeunload", (e) => {
+        if (!resultsShown) return;
+        e.preventDefault();
+        e.returnValue = "";
+      });
+    }
 
     function resetStartButton(btn, text) {
       btn.disabled = false;
@@ -674,7 +834,6 @@
       }
     }
 
-    // ── Branch selected → ask the server which exam to show ─────────────────────
     document.getElementById("branch-select").addEventListener("change", async (e) => {
       const branch = e.target.value;
       const examInput = document.getElementById("exam-id-input");
@@ -702,7 +861,6 @@
       }
     });
 
-    // ── Start exam ───────────────────────────────────────────────────────────────
     document.getElementById("start-exam").addEventListener("click", async () => {
       const startBtn = document.getElementById("start-exam");
       const branch = document.getElementById("branch-select").value;
@@ -721,7 +879,6 @@
       startBtn.style.background = "grey";
 
       try {
-        // Step 1: Is the exam open yet, and is it restricted?
         const { data: gate, error: gateErr } = await supabaseClient.rpc("get_exam_gate", { p_exam_id: examId });
         if (gateErr) throw gateErr;
 
@@ -741,7 +898,6 @@
           return;
         }
 
-        // Step 2: Fee check, only for restricted exams
         if (gate.restricted) {
           const feeResult = await verifyStudentFeeStatus(formattedId, branch);
 
@@ -764,7 +920,6 @@
           }
         }
 
-        // Step 3: Student profile + exam settings + questions, all in one call
         const { data: started, error: startErr } = await supabaseClient.rpc("start_exam", {
           p_roll_number: formattedId,
           p_exam_id: examId,
@@ -808,7 +963,6 @@
         examSubmitted = false;
         userAnswers = [];
 
-        // Update Right Panel
         document.getElementById("candidate-info").innerHTML = `
       <h3>Candidate Info</h3>
       <p><b>Roll Number:</b> ${student.roll_number}</p>
@@ -820,7 +974,6 @@
       <p><b>Status:</b> Active</p>
     `;
 
-        // Proceed to Exam
         if (document.documentElement.requestFullscreen) {
           document.documentElement.requestFullscreen().catch(() => { });
         }
@@ -843,15 +996,13 @@
       }
     });
 
-    // Adds Hindi translations to the questions the server returned
     async function prepareQuestions(rawQuestions) {
       allQuestions = await Promise.all(rawQuestions.map(async (q) => {
-        // strip /n before sending to translator for cleaner output
         const questionHi = await translateText(q.question_text.split("/n").join(" "));
 
         const options = await Promise.all(q.options.map(async (opt) => ({
           id: opt.option_id,
-          text_en: opt.option_text,      // keep original /n for display
+          text_en: opt.option_text,
           text_hi: await translateText(opt.option_text.split("/n").join(" "))
         })));
 
@@ -903,13 +1054,11 @@
     </div>
   `;
 
-      // Restore answer
       if (userAnswers[index]) {
         const radio = qDiv.querySelector(`input[value="${userAnswers[index]}"]`);
         if (radio) radio.checked = true;
       }
 
-      // Event listeners
       qDiv.querySelectorAll('input[type="radio"]').forEach(input => {
         input.addEventListener("change", () => {
           userAnswers[index] = input.value;
@@ -920,10 +1069,11 @@
       if (!isLast) {
         qDiv.querySelector(".next-btn").addEventListener("click", () => renderQuestion(currentIndex + 1));
       } else {
-        qDiv.querySelector(".submit-btn-final").addEventListener("click", submitExam);
+        qDiv.querySelector(".submit-btn-final").addEventListener("click", requestSubmit);
       }
 
       updateSidebarHighlight();
+      updateSubmitButtons();
     }
 
     function updateSidebarHighlight() {
@@ -935,24 +1085,29 @@
     }
 
     function startTimer(durationInMinutes) {
-      let time = durationInMinutes * 60;
+      examTotalSecs = durationInMinutes * 60;
+      remainingSecs = examTotalSecs;
       const timerDisplay = document.getElementById("timer");
 
       clearInterval(timerInterval);
+      updateSubmitButtons();
+
       timerInterval = setInterval(() => {
-        const mins = Math.floor(time / 60);
-        const secs = time % 60;
+        const mins = Math.floor(remainingSecs / 60);
+        const secs = remainingSecs % 60;
         timerDisplay.textContent = `⏳ ${mins}:${secs < 10 ? "0" : ""}${secs}`;
 
-        if (time <= 0) {
+        if (remainingSecs <= 0) {
           clearInterval(timerInterval);
+          hideConfirmModal();
           submitExam();
+          return;
         }
-        time--;
+        remainingSecs--;
+        updateSubmitButtons();
       }, 1000);
     }
 
-    // ── Submit: the server grades the answers and saves the result ──────────────
     async function submitExam() {
       if (examSubmitted) return;
       examSubmitted = true;
@@ -988,19 +1143,20 @@
 
         clearInterval(timerInterval);
         renderResultsDashboard(result);
+        enableResultsGuards();
         document.getElementById("exam").style.display = "none";
         document.getElementById("success").style.display = "flex";
       } catch (err) {
         console.error("Submission error:", err);
         alert("Couldn't submit your exam. Please check your connection and try again.");
 
-        // let the student retry
         examSubmitted = false;
         document.querySelectorAll(".submit-btn, .submit-btn-final").forEach(btn => {
           btn.disabled = false;
           btn.textContent = "Submit Exam";
           btn.style.background = "";
         });
+        updateSubmitButtons();
       }
     }
 
@@ -1010,7 +1166,6 @@
       const total = result.out_of || allQuestions.length;
       const percentage = total > 0 ? (score / total) * 100 : 0;
 
-      // question_id -> correct option_id (sent by the server only after submission)
       const correctMap = {};
       (result.review || []).forEach(r => { correctMap[r.question_id] = r.correct_option_id; });
 
@@ -1065,7 +1220,7 @@
           <div class="score-stats">
             You got <strong>${score}</strong> out of <strong>${total}</strong> questions correct.
           </div>
-          <button class="exit-btn" onclick="location.reload()">Back to Home</button>
+          <button class="exit-btn" onclick="confirmLeaveResults()">Back to Home</button>
         </div>
       </div>
     </div>
@@ -1076,12 +1231,11 @@
         ${reviewCards}
       </div>
       <div style="text-align: center; margin-top: 60px;">
-        <button class="exit-btn" style="background:#64748b" onclick="location.reload()">Finish & Close</button>
+        <button class="exit-btn" style="background:#64748b" onclick="confirmLeaveResults()">Finish & Close</button>
       </div>
     </div>
   `;
 
-      // Animate the circle
       let startValue = 0;
       const progressCircle = document.getElementById("progress-circle");
       const progressValue = progressCircle.querySelector(".progress-value");
@@ -1104,8 +1258,7 @@
       }, interval);
     }
 
-    // Global submit button handler (right panel)
-    document.querySelector(".submit-btn").addEventListener("click", submitExam);
+    document.querySelector(".submit-btn").addEventListener("click", requestSubmit);
   </script>
 </body>
 
